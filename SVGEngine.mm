@@ -15,6 +15,8 @@
 static void __attribute__((__overloadable__)) _xmlFreePtr(char * const *p) { xmlFree(*p); }
 #define xmlAutoFree __attribute__((__cleanup__(_xmlFreePtr)))
 
+#define delta 0.005
+
 NSString * const kValidSVGCommands = @"CcMmLlHhVvZzQqTtAaSs";
 
 struct svgParser {
@@ -62,6 +64,11 @@ protected:
     void appendShorthandCubicCurve();
     void appendQuadraticCurve();
     void appendShorthandQuadraticCurve();
+    void appendEllipticalArc();
+    CGPoint centerEllipse(CGFloat x1, CGFloat y1, CGFloat x2, CGFloat y2, CGFloat a, CGFloat b, BOOL largeArcFlag, BOOL sweepFlag);
+    CGPoint controlPointForQuadraticPath(CGPoint startPoint, CGPoint endPoint, CGPoint center, CGFloat a, CGFloat b);
+    void calculateControlPointsForCubicPath(CGPoint *firstControlPoint, CGPoint *secondControlPoint, CGPoint center, CGPoint startPoint, CGPoint endPoint, CGFloat a, CGFloat b);
+    CGPoint ellipsePoint(CGPoint start, CGPoint end, CGPoint center, CGFloat a, CGFloat b, CGFloat t);
 };
 
 struct hexTriplet {
@@ -510,7 +517,7 @@ CF_RETURNS_RETAINED CGMutablePathRef pathDefinitionParser::parse()
                 appendShorthandQuadraticCurve();
                 break;
             case 'A': case 'a':
-                NSLog(@"*** Error: Elliptical arcs not supported"); // TODO
+                appendEllipticalArc();
                 break;
             case 'Z': case 'z':
                 CGPathCloseSubpath(_path);
@@ -674,6 +681,218 @@ void pathDefinitionParser::appendShorthandQuadraticCurve()
     }
 }
 
+void pathDefinitionParser::appendEllipticalArc()
+{
+    if (_operands.size()%7 != 0) {
+        NSLog(@"*** Error: Invalid number of parameters for A command");
+        return;
+    }
+    
+    for (NSUInteger i = 0; i < _operands.size(); i+= 7) {
+        _lastControlPoint = CGPathGetCurrentPoint(_path);
+        CGFloat rx = _operands[i + 0];
+        CGFloat ry = _operands[i + 1];
+        CGFloat xAxisRotation = _operands[i + 2]  * M_PI / 180;
+        BOOL largeArcFlag = _operands[i + 3];
+        BOOL sweepFlag = _operands[i + 4];
+        CGFloat x = _cmd == 'a' ? _lastControlPoint.x + _operands[i + 5] : _operands[i + 5];
+        CGFloat y = _cmd == 'a' ? _lastControlPoint.y + _operands[i + 6] : _operands[i + 6];
+        
+        if (rx == 0 || ry == 0) {
+            return;
+        }
+        
+        if (xAxisRotation != 0) {
+            NSLog(@"*** Rotating for elliptical arcs not implemented!");
+        }
+        
+        CGPoint ellipseCenter = centerEllipse(_lastControlPoint.x, _lastControlPoint.y, x, y, rx, ry, largeArcFlag, sweepFlag);
+        CGFloat cx = ellipseCenter.x;
+        CGFloat cy = ellipseCenter.y;
+        
+        CGPoint top = CGPointMake(cx, cy - ry);
+        CGPoint left = CGPointMake(cx - rx, cy);
+        CGPoint bottom = CGPointMake(cx, cy + ry);
+        CGPoint right = CGPointMake(cx + rx, cy);
+        
+        CGPoint endPoint = CGPointMake(x, y);
+        
+        while (CGPointEqualToPoint(_lastControlPoint, endPoint) == NO) {
+            CGPoint nextPoint = CGPointZero;
+            
+            BOOL isTopPartContainsCurrentPoint = _lastControlPoint.y <= cy + delta;
+            BOOL isBottomPartContainsCurrentPoint = _lastControlPoint.y >= cy - delta;
+            BOOL isRightPartContainsCurrentPoint = _lastControlPoint.x >= cx - delta;
+            BOOL isLeftPartContainsCurrentPoint = _lastControlPoint.x <= cx + delta;
+            
+            BOOL isTopPartContainsEndPoint = y <= cy + delta;
+            BOOL isBottomPartContainsEndPoint = y >= cy - delta;
+            BOOL isRightPartContainsEndPoint = x >= cx - delta;
+            BOOL isLeftPartContainsEndPoint = x <= cx + delta;
+            
+            BOOL isEndPointLiesToTheLeftOfCurrentPoint = x <= _lastControlPoint.x + delta;
+            BOOL isEndPointLiesToTheRightOfCurrentPoint = x >= _lastControlPoint.x - delta;
+            
+            BOOL isCurrentPointTopOrBottom = _lastControlPoint.x >= cx - delta && _lastControlPoint.x <= cx + delta;
+            
+            if (sweepFlag) {
+                if (isTopPartContainsCurrentPoint && isRightPartContainsCurrentPoint) {
+                    nextPoint = isTopPartContainsEndPoint && isRightPartContainsEndPoint && isEndPointLiesToTheRightOfCurrentPoint ? endPoint : right;
+                }
+                
+                if (isBottomPartContainsCurrentPoint && isRightPartContainsCurrentPoint) {
+                    nextPoint = isBottomPartContainsEndPoint && isRightPartContainsEndPoint && isEndPointLiesToTheLeftOfCurrentPoint ? endPoint : bottom;
+                }
+                
+                if (isBottomPartContainsCurrentPoint && isLeftPartContainsCurrentPoint) {
+                    nextPoint = isBottomPartContainsEndPoint && isLeftPartContainsEndPoint && isEndPointLiesToTheLeftOfCurrentPoint ? endPoint : left;
+                }
+                
+                if (isTopPartContainsCurrentPoint && isLeftPartContainsCurrentPoint && isCurrentPointTopOrBottom == NO) {
+                    nextPoint = isTopPartContainsEndPoint && isLeftPartContainsEndPoint && isEndPointLiesToTheRightOfCurrentPoint ? endPoint : top;
+                }
+            } else {
+                if (isTopPartContainsCurrentPoint && isLeftPartContainsCurrentPoint) {
+                    nextPoint = isTopPartContainsEndPoint && isLeftPartContainsEndPoint && isEndPointLiesToTheLeftOfCurrentPoint ? endPoint : left;
+                }
+                
+                if (isBottomPartContainsCurrentPoint && isLeftPartContainsCurrentPoint) {
+                    nextPoint = isBottomPartContainsEndPoint && isLeftPartContainsEndPoint && isEndPointLiesToTheRightOfCurrentPoint ? endPoint : bottom;
+                }
+                
+                if (isBottomPartContainsCurrentPoint && isRightPartContainsCurrentPoint) {
+                    nextPoint = isBottomPartContainsEndPoint && isRightPartContainsEndPoint && isEndPointLiesToTheRightOfCurrentPoint ? endPoint : right;
+                }
+                
+                if (isTopPartContainsCurrentPoint && isRightPartContainsCurrentPoint && isCurrentPointTopOrBottom == NO) {
+                    nextPoint = isTopPartContainsEndPoint && isRightPartContainsEndPoint && isEndPointLiesToTheLeftOfCurrentPoint ? endPoint : top;
+                }
+            }
+            
+            CGPoint firstControlPoint = CGPointZero;
+            CGPoint secondControlPoint = CGPointZero;
+            
+            calculateControlPointsForCubicPath(&firstControlPoint, &secondControlPoint, ellipseCenter, _lastControlPoint, nextPoint, rx, ry);
+            CGPathAddCurveToPoint(_path, nil, firstControlPoint.x, firstControlPoint.y, secondControlPoint.x, secondControlPoint.y, nextPoint.x, nextPoint.y);
+            
+            //            CGPoint controlPoint = controlPointForQuadraticPath(_lastControlPoint, nextPoint, ellipseCenter, rx, ry);
+            //            CGPathAddQuadCurveToPoint(_path, nil, controlPoint.x, controlPoint.y, nextPoint.x, nextPoint.y);
+            _lastControlPoint = nextPoint;
+        }
+    }
+}
+
+CGPoint pathDefinitionParser::centerEllipse(CGFloat x1, CGFloat y1, CGFloat x2, CGFloat y2, CGFloat a, CGFloat b, BOOL largeArcFlag, BOOL sweepFlag) {
+    CGFloat k = 2 * (x2 - x1) / pow(a, 2);
+    CGFloat m = 2 * (y2 - y1) / pow(b, 2);
+    CGFloat p = (pow(x2, 2) - pow(x1, 2)) / pow(a, 2) + (pow(y2, 2) - pow(y1, 2)) / pow(b, 2);
+    
+    CGFloat y01 = 0;
+    CGFloat y02 = 0;
+    CGFloat x01 = 0;
+    CGFloat x02 = 0;
+    
+    if (k == 0) {
+        y01 = y02 = p / m;
+        
+        CGFloat c = 1 / pow(a, 2);
+        CGFloat z = 2 * x1 / pow(a, 2);
+        CGFloat f = pow(p, 2) / pow(b * m, 2) - 2 * y1 * p / (m * pow(b, 2)) - 1 + pow(x1, 2) / pow(a, 2) + pow(y1, 2) / pow(b, 2);
+        CGFloat d = fabs(pow(z, 2) - 4 * c * f);
+        
+        x01 = (z - sqrt(d)) / (2 * c);
+        x02 = (z + sqrt(d)) / (2 * c);
+    } else if (m == 0) {
+        x01 = x02 = p / k;
+        
+        CGFloat c = 1 / pow(b, 2);
+        CGFloat z = 2 * y1 / pow(b, 2);
+        CGFloat f = pow(p, 2) / pow(a * k, 2) - 2 * x1 * p / (k * pow(a, 2)) - 1 + pow(x1, 2) / pow(a, 2) + pow(y1, 2) / pow(b, 2);
+        CGFloat d = fabs(pow(z, 2) - 4 * c * f);
+        
+        y01 = (z - sqrt(d)) / (2 * c);
+        y02 = (z + sqrt(d)) / (2 * c);
+    } else {
+        CGFloat c = pow(m, 2) / pow(a * k, 2) + 1 / pow(b, 2);
+        CGFloat z = 2 * p * m / pow(a * k, 2) - 2 * x1 * m / (k * pow(a, 2)) + 2 * y1 / pow(b, 2);
+        CGFloat f = pow(p, 2) / pow(a * k, 2) - 2 * x1 * p / (k * pow(a, 2)) - 1 + pow(x1, 2) / pow(a, 2) + pow(y1, 2) / pow(b, 2);
+        CGFloat d = fabs(pow(z, 2) - 4 * c * f);
+        
+        y01 = (z - sqrt(d)) / (2 * c);
+        y02 = (z + sqrt(d)) / (2 * c);
+        
+        x01 = (p - m * y01) / k;
+        x02 = (p - m * y02) / k;
+    }
+    
+    CGPoint firstCenter = CGPointZero;
+    CGPoint secondCenter = CGPointZero;
+    BOOL isSearchFirstCenter = NO;
+    
+    if (y01 == y02) {
+        firstCenter = CGPointMake(MIN(x01, x02), y01);
+        secondCenter = CGPointMake(MAX(x01, x02), y01);
+        isSearchFirstCenter = y1 > y2 ? sweepFlag == largeArcFlag : sweepFlag != largeArcFlag;
+    } else {
+        firstCenter = y01 > y02 ? CGPointMake(x02, y02) : CGPointMake(x01, y01);
+        secondCenter = y01 > y02 ? CGPointMake(x01, y01) : CGPointMake(x02, y02);
+        isSearchFirstCenter = x1 > x2 ? sweepFlag != largeArcFlag : sweepFlag == largeArcFlag;
+    }
+    
+    return isSearchFirstCenter ? firstCenter : secondCenter;
+}
+
+CGPoint pathDefinitionParser::controlPointForQuadraticPath(CGPoint startPoint, CGPoint endPoint, CGPoint center, CGFloat a, CGFloat b) {
+    CGFloat t = 0.5;
+    
+    CGPoint tPoint = ellipsePoint(startPoint, endPoint, center, a, b, t);
+    
+    CGFloat cpx = (tPoint.x - pow(1 - t, 2) * startPoint.x - pow(t, 2) * endPoint.x) / (2 * t * (1 - t));
+    CGFloat cpy = (tPoint.y - pow(1 - t, 2) * startPoint.y - pow(t, 2) * endPoint.y) / (2 * t * (1 - t));
+    
+    return CGPointMake(cpx, cpy);
+}
+
+void pathDefinitionParser::calculateControlPointsForCubicPath(CGPoint *firstControlPoint, CGPoint *secondControlPoint, CGPoint center, CGPoint startPoint, CGPoint endPoint, CGFloat a, CGFloat b) {
+    CGFloat t1 = 0.25;
+    CGFloat t2 = 0.75;
+    
+    CGPoint pointT1 = ellipsePoint(startPoint, endPoint, center, a, b, t1);
+    CGPoint pointT2 = ellipsePoint(startPoint, endPoint, center, a, b, t2);
+    
+    CGFloat z = 3 * t1 * t2 * pow(1 - t2, 2) / (1 - t1) - 3 * (1 - t2) * pow(t2, 2);
+    CGFloat c = pow(1 - t2, 2) * (1 - t2 / t1);
+    CGFloat f = t2 * (pow(t2, 2) - pow(t1, 2) * pow(1 - t2, 2) / pow(1 - t1, 2));
+    CGFloat k = t2 * pow(1 - t2, 2) / (t1 * pow(1 - t1, 2));
+    
+    CGFloat m = 3 * t1 * pow(1 - t1, 2);
+    CGFloat n = (1 - t1) / (3 * t1);
+    CGFloat p = t1 / (1 - t1);
+    CGFloat l = pow(t1, 2) / (3 * pow(1 - t1, 2));
+    
+    CGFloat cp2x = startPoint.x * c / z + endPoint.x * f / z + pointT1.x * k / z - pointT2.x / z;
+    CGFloat cp2y = startPoint.y * c / z + endPoint.y * f / z + pointT1.y * k / z - pointT2.y / z;
+    CGFloat cp1x = pointT1.x / m - startPoint.x * n - cp2x * p - endPoint.x * l;
+    CGFloat cp1y = pointT1.y / m - startPoint.y * n - cp2y * p - endPoint.y * l;
+    
+    *firstControlPoint = CGPointMake(cp1x, cp1y);
+    *secondControlPoint = CGPointMake(cp2x, cp2y);
+}
+
+CGPoint pathDefinitionParser::ellipsePoint(CGPoint start, CGPoint end, CGPoint center, CGFloat a, CGFloat b, CGFloat t) {
+    CGFloat xt = (end.x - start.x) * t + start.x;
+    CGFloat z = pow(b, 2) - pow(b, 2) * pow(xt - center.x, 2) / pow(a, 2) - pow(center.y, 2);
+    CGFloat d = fabs(4 * pow(center.y, 2) + 4 * z);
+    
+    CGFloat yt1 = (2 * center.y - sqrt(d)) / 2;
+    CGFloat yt2 = (2 * center.y + sqrt(d)) / 2;
+    
+    if (yt1 >= MIN(start.y, end.y) - delta && yt1 <= MAX(start.y, end.y) + delta) {
+        return CGPointMake(xt, yt1);
+    } else {
+        return CGPointMake(xt, yt2);
+    }
+}
 
 hexTriplet::hexTriplet(NSString *str)
 {
